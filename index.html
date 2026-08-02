@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LLM Eval Scorecard — side-by-side rubric scoring</title>
+<style>
+  :root {
+    color-scheme: light;
+    --plane:          #f9f9f7;
+    --surface-1:      #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;   /* Model A */
+    --series-2:       #eb6834;   /* Model B */
+    --good:           #0ca30c;
+    --warning:        #fab219;
+    --accent-wash:    rgba(42,120,214,0.08);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --plane:          #0d0d0d;
+      --surface-1:      #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+      --series-2:       #d95926;
+      --accent-wash:    rgba(57,135,229,0.14);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:          #0d0d0d;
+    --surface-1:      #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --accent-wash:    rgba(57,135,229,0.14);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 80px; }
+
+  header.top { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+  header.top h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header.top p { margin: 0; color: var(--text-secondary); font-size: 13.5px; max-width: 60ch; }
+  .spacer { flex: 1 1 auto; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .card > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text-muted); margin: 0 0 14px; font-weight: 600;
+  }
+
+  label.f { display: block; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 5px; font-weight: 500; }
+  input[type=text], textarea, select {
+    width: 100%; font: inherit; color: var(--text-primary);
+    background: var(--plane);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+  }
+  textarea { resize: vertical; line-height: 1.55; }
+  input[type=text]:focus, textarea:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+  input[type=number] {
+    width: 68px; font: inherit; color: var(--text-primary); background: var(--plane);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px;
+  }
+
+  .row { display: grid; gap: 14px; }
+  .row.c3 { grid-template-columns: 2fr 1fr 1fr; }
+  .row.c2 { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 800px) { .row.c3, .row.c2 { grid-template-columns: 1fr; } }
+
+  button {
+    font: inherit; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface-1); color: var(--text-primary);
+    padding: 9px 14px;
+  }
+  button:hover { background: var(--accent-wash); }
+  button.primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { color: var(--text-secondary); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btnrow { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-secondary); cursor: pointer; user-select: none; }
+  .toggle input { width: 16px; height: 16px; accent-color: var(--series-1); }
+
+  /* --- side-by-side panes --- */
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 860px) { .panes { grid-template-columns: 1fr; } }
+  .pane { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; background: var(--plane); }
+  .pane header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+  .pane header .name { font-weight: 600; font-size: 14px; }
+  .pane header .pos { font-size: 11.5px; color: var(--text-muted); margin-left: auto; letter-spacing: 0.04em; text-transform: uppercase; }
+
+  .crit { margin-top: 12px; }
+  .crit .lbl { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+  .crit .lbl b { font-size: 13px; font-weight: 600; }
+  .crit .lbl span { font-size: 11.5px; color: var(--text-muted); }
+  .scale { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+  .scale button {
+    padding: 7px 0; border-radius: 7px; font-variant-numeric: tabular-nums;
+    color: var(--text-secondary); background: var(--surface-1);
+  }
+  .scale button[aria-pressed="true"] { background: var(--sel); border-color: var(--sel); color: #fff; font-weight: 600; }
+
+  /* --- stat tiles --- */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .tile { border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 14px; background: var(--plane); }
+  .tile .k { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .tile .v { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 4px; }
+  .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  svg.chart { width: 100%; height: auto; display: block; }
+  svg.chart text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 20; opacity: 0;
+    transition: opacity .09s; background: var(--surface-1); color: var(--text-primary);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+    font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.14); max-width: 240px;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+  .prompt-cell { max-width: 280px; color: var(--text-secondary); }
+  .winA { color: var(--series-1); font-weight: 600; }
+  .winB { color: var(--series-2); font-weight: 600; }
+  .winT { color: var(--text-muted); font-weight: 600; }
+  .empty { color: var(--text-muted); font-size: 13.5px; padding: 18px 0; text-align: center; }
+  .note { font-size: 12.5px; color: var(--text-muted); margin-top: 10px; }
+  .rm { border: none; background: none; color: var(--text-muted); padding: 2px 6px; }
+  .rm:hover { color: #d03b3b; background: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div>
+      <h1>LLM Eval Scorecard</h1>
+      <p>Paste two responses to the same prompt, score them on a weighted rubric, and watch the aggregate verdict build across the session. Blind mode randomizes pane order so position bias is measurable, not assumed.</p>
+    </div>
+    <div class="spacer"></div>
+    <div class="btnrow">
+      <button id="themeBtn" class="ghost" title="Toggle light/dark">◐ Theme</button>
+    </div>
+  </header>
+
+  <!-- SESSION SETUP -->
+  <section class="card">
+    <h2>Session</h2>
+    <div class="row c3">
+      <div>
+        <label class="f" for="sessName">Session name</label>
+        <input type="text" id="sessName" placeholder="e.g. Checkout-help prompts, v3 vs v4" />
+      </div>
+      <div>
+        <label class="f" for="modelA">Model A</label>
+        <input type="text" id="modelA" placeholder="Model A" />
+      </div>
+      <div>
+        <label class="f" for="modelB">Model B</label>
+        <input type="text" id="modelB" placeholder="Model B" />
+      </div>
+    </div>
+    <div class="btnrow" style="margin-top:14px">
+      <label class="toggle"><input type="checkbox" id="blind" checked /> Blind scoring (hide model names until saved)</label>
+      <div class="spacer"></div>
+      <span style="font-size:12.5px;color:var(--text-muted)">Rubric weights:</span>
+      <span id="weightBox" class="btnrow"></span>
+    </div>
+    <p class="note" id="weightNote"></p>
+  </section>
+
+  <!-- TRIAL -->
+  <section class="card">
+    <h2>Trial</h2>
+    <label class="f" for="prompt">Prompt (shared by both responses)</label>
+    <textarea id="prompt" rows="3" placeholder="What was asked of both models?"></textarea>
+
+    <div class="panes" style="margin-top:14px">
+      <div class="pane" id="paneL"></div>
+      <div class="pane" id="paneR"></div>
+    </div>
+
+    <div style="margin-top:14px">
+      <label class="f" for="notes">Notes / failure mode (optional)</label>
+      <input type="text" id="notes" placeholder="e.g. B invented a return window; A hedged but stayed correct" />
+    </div>
+
+    <div class="btnrow" style="margin-top:14px">
+      <button class="primary" id="saveBtn">Save eval &amp; next trial</button>
+      <button class="ghost" id="clearTrial">Clear trial</button>
+      <span id="saveHint" style="font-size:12.5px;color:var(--text-muted)"></span>
+    </div>
+  </section>
+
+  <!-- AGGREGATE -->
+  <section class="card">
+    <h2>Session aggregate</h2>
+    <div class="tiles" id="tiles"></div>
+    <div class="legend" id="legend"></div>
+    <svg class="chart" id="chart" viewBox="0 0 760 300" role="img" aria-label="Mean rubric score by criterion for each model"></svg>
+    <p class="note" id="chartNote"></p>
+  </section>
+
+  <!-- LOG -->
+  <section class="card">
+    <h2>Eval log</h2>
+    <div class="tablewrap"><table id="log"></table></div>
+    <div class="btnrow" style="margin-top:14px">
+      <button id="exportBtn">Export CSV</button>
+      <button class="ghost" id="demoBtn">Load demo session</button>
+      <div class="spacer"></div>
+      <button class="ghost" id="resetBtn">Clear session</button>
+    </div>
+  </section>
+
+  <p class="note">Everything lives in your browser's localStorage — nothing is uploaded.</p>
+</div>
+
+<div id="tip" role="tooltip"></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const CRITERIA = [
+    { key: "helpfulness", label: "Helpfulness", hint: "Does it actually resolve the ask?", w: 0.4 },
+    { key: "accuracy",    label: "Accuracy",    hint: "Factually right; no invented specifics", w: 0.4 },
+    { key: "tone",        label: "Tone",        hint: "Right register; not curt or fawning",   w: 0.2 },
+  ];
+  const KEY = "llm-eval-scorecard/v1";
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- state ----------
+  const fresh = () => ({
+    sessionName: "",
+    modelA: "Model A",
+    modelB: "Model B",
+    blind: true,
+    weights: Object.fromEntries(CRITERIA.map(c => [c.key, c.w])),
+    evals: [],
+  });
+
+  let state = load();
+  let trial = newTrial();
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return fresh();
+      const s = JSON.parse(raw);
+      return Object.assign(fresh(), s);
+    } catch { return fresh(); }
+  }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
+
+  function newTrial() {
+    return {
+      prompt: "",
+      // leftIsA is randomized every trial — this is what makes the position-bias
+      // number meaningful instead of an artifact of always putting A on the left.
+      leftIsA: Math.random() < 0.5,
+      left:  { text: "", scores: {} },
+      right: { text: "", scores: {} },
+      notes: "",
+    };
+  }
+
+  // ---------- scoring math ----------
+  function normWeights() {
+    const sum = CRITERIA.reduce((t, c) => t + (Number(state.weights[c.key]) || 0), 0);
+    if (sum <= 0) return Object.fromEntries(CRITERIA.map(c => [c.key, 1 / CRITERIA.length]));
+    return Object.fromEntries(CRITERIA.map(c => [c.key, (Number(state.weights[c.key]) || 0) / sum]));
+  }
+  function weighted(scores) {
+    const w = normWeights();
+    let t = 0;
+    for (const c of CRITERIA) t += (Number(scores[c.key]) || 0) * w[c.key];
+    return t;
+  }
+  const complete = (s) => CRITERIA.every(c => Number(s[c.key]) > 0);
+  const fmt = (n, d = 2) => Number.isFinite(n) ? n.toFixed(d) : "—";
+
+  // ---------- trial panes ----------
+  function paneMeta(side) {
+    const isA = (side === "left") === trial.leftIsA;
+    const name = state.blind
+      ? (side === "left" ? "Response 1" : "Response 2")
+      : (isA ? state.modelA : state.modelB);
+    return { isA, name, color: state.blind ? "var(--text-muted)" : (isA ? "var(--series-1)" : "var(--series-2)") };
+  }
+
+  function renderPane(side) {
+    const el = side === "left" ? $("paneL") : $("paneR");
+    const m = paneMeta(side);
+    const d = trial[side];
+    el.innerHTML = `
+      <header>
+        <span class="swatch" style="background:${m.color}"></span>
+        <span class="name">${esc(m.name)}</span>
+        <span class="pos">${side === "left" ? "left pane" : "right pane"}</span>
+      </header>
+      <textarea rows="7" placeholder="Paste the response…" data-side="${side}">${esc(d.text)}</textarea>
+      ${CRITERIA.map(c => `
+        <div class="crit">
+          <div class="lbl"><b>${c.label}</b><span>${c.hint}</span></div>
+          <div class="scale" style="--sel:${state.blind ? "var(--text-secondary)" : (m.isA ? "var(--series-1)" : "var(--series-2)")}">
+            ${[1,2,3,4,5].map(v => `
+              <button type="button" data-side="${side}" data-crit="${c.key}" data-val="${v}"
+                aria-pressed="${Number(d.scores[c.key]) === v}"
+                aria-label="${c.label} ${v} of 5">${v}</button>`).join("")}
+          </div>
+        </div>`).join("")}
+      <div style="margin-top:12px;font-size:12.5px;color:var(--text-secondary)">
+        Weighted score: <b style="font-variant-numeric:tabular-nums">${complete(d.scores) ? fmt(weighted(d.scores)) : "—"}</b> / 5.00
+      </div>`;
+
+    el.querySelector("textarea").addEventListener("input", (e) => { d.text = e.target.value; updateSaveHint(); });
+    el.querySelectorAll(".scale button").forEach(b => b.addEventListener("click", () => {
+      const v = Number(b.dataset.val);
+      d.scores[b.dataset.crit] = d.scores[b.dataset.crit] === v ? 0 : v;
+      renderPane(side); updateSaveHint();
+    }));
+  }
+
+  function renderTrial() {
+    $("prompt").value = trial.prompt;
+    $("notes").value = trial.notes;
+    renderPane("left"); renderPane("right");
+    updateSaveHint();
+  }
+
+  function trialReady() {
+    return trial.prompt.trim() && complete(trial.left.scores) && complete(trial.right.scores);
+  }
+  function updateSaveHint() {
+    const ok = trialReady();
+    $("saveBtn").disabled = !ok;
+    const missing = [];
+    if (!trial.prompt.trim()) missing.push("a prompt");
+    if (!complete(trial.left.scores)) missing.push("all left-pane scores");
+    if (!complete(trial.right.scores)) missing.push("all right-pane scores");
+    $("saveHint").textContent = ok ? "⌘/Ctrl + Enter to save" : "Needs " + missing.join(", ") + ".";
+  }
+
+  // ---------- save ----------
+  function saveEval() {
+    if (!trialReady()) return;
+    const aSide = trial.leftIsA ? "left" : "right";
+    const bSide = trial.leftIsA ? "right" : "left";
+    const a = { ...trial[aSide].scores }, b = { ...trial[bSide].scores };
+    const wa = weighted(a), wb = weighted(b);
+    state.evals.push({
+      t: new Date().toISOString(),
+      prompt: trial.prompt.trim(),
+      a, b, wa, wb,
+      winner: wa > wb ? "A" : wb > wa ? "B" : "tie",
+      leftIsA: trial.leftIsA,
+      notes: trial.notes.trim(),
+      textA: trial[aSide].text, textB: trial[bSide].text,
+    });
+    save();
+    trial = newTrial();
+    renderTrial(); renderAll();
+    $("prompt").focus();
+  }
+
+  // ---------- aggregate ----------
+  function agg() {
+    const n = state.evals.length;
+    const mean = (f) => n ? state.evals.reduce((t, e) => t + f(e), 0) / n : NaN;
+    const byCrit = CRITERIA.map(c => ({
+      label: c.label,
+      a: mean(e => Number(e.a[c.key]) || 0),
+      b: mean(e => Number(e.b[c.key]) || 0),
+    }));
+    const winA = state.evals.filter(e => e.winner === "A").length;
+    const winB = state.evals.filter(e => e.winner === "B").length;
+    const ties = n - winA - winB;
+    // decided = trials with a winner; leftWins = winner sat in the left pane
+    const decided = state.evals.filter(e => e.winner !== "tie");
+    const leftWins = decided.filter(e => (e.winner === "A") === e.leftIsA).length;
+    return {
+      n, byCrit, winA, winB, ties,
+      overallA: mean(e => e.wa), overallB: mean(e => e.wb),
+      decided: decided.length,
+      leftRate: decided.length ? leftWins / decided.length : NaN,
+    };
+  }
+
+  function renderTiles() {
+    const g = agg();
+    const lead = !g.n ? "—" : g.overallA > g.overallB ? state.modelA : g.overallB > g.overallA ? state.modelB : "Dead even";
+    const gap = !g.n ? NaN : Math.abs(g.overallA - g.overallB);
+    const bias = g.decided ? Math.abs(g.leftRate - 0.5) : NaN;
+    const biasFlag = !Number.isFinite(bias) ? "" : bias >= 0.25 && g.decided >= 8
+      ? `<span style="color:var(--warning)">⚑ check position bias</span>` : "within noise";
+    $("tiles").innerHTML = `
+      <div class="tile"><div class="k">Evals</div><div class="v">${g.n}</div>
+        <div class="sub">${g.ties} tie${g.ties === 1 ? "" : "s"}</div></div>
+      <div class="tile"><div class="k">${esc(state.modelA)}</div>
+        <div class="v" style="color:var(--series-1)">${fmt(g.overallA)}</div>
+        <div class="sub">${g.n ? Math.round(g.winA / g.n * 100) + "% win rate" : "no data"}</div></div>
+      <div class="tile"><div class="k">${esc(state.modelB)}</div>
+        <div class="v" style="color:var(--series-2)">${fmt(g.overallB)}</div>
+        <div class="sub">${g.n ? Math.round(g.winB / g.n * 100) + "% win rate" : "no data"}</div></div>
+      <div class="tile"><div class="k">Leader</div><div class="v" style="font-size:19px">${esc(lead)}</div>
+        <div class="sub">${Number.isFinite(gap) ? "by " + fmt(gap) + " pts" : "—"}</div></div>
+      <div class="tile"><div class="k">Left-pane win rate</div>
+        <div class="v">${Number.isFinite(g.leftRate) ? Math.round(g.leftRate * 100) + "%" : "—"}</div>
+        <div class="sub">${biasFlag}</div></div>`;
+  }
+
+  // ---------- chart ----------
+  function barPath(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    return `M${x},${y + h} V${y + r} a${r},${r} 0 0 1 ${r},${-r} h${w - 2 * r} a${r},${r} 0 0 1 ${r},${r} V${y + h} Z`;
+  }
+
+  function renderChart() {
+    const g = agg();
+    const svg = $("chart");
+    $("legend").innerHTML = `
+      <span><span class="swatch" style="background:var(--series-1)"></span>${esc(state.modelA)}</span>
+      <span><span class="swatch" style="background:var(--series-2)"></span>${esc(state.modelB)}</span>`;
+
+    if (!g.n) {
+      svg.innerHTML = `<text x="380" y="150" text-anchor="middle" fill="var(--text-muted)" font-size="14">
+        Save an eval to build the scorecard.</text>`;
+      $("chartNote").textContent = "";
+      return;
+    }
+
+    const W = 760, H = 300, ml = 44, mr = 16, mt = 16, mb = 52;
+    const pw = W - ml - mr, ph = H - mt - mb;
+    const groups = [...g.byCrit, { label: "Overall", a: g.overallA, b: g.overallB }];
+    const gw = pw / groups.length;
+    const bw = Math.min(46, (gw - 26) / 2);      // two bars per group
+    const gap = 2;                                // 2px surface gap between adjacent bars
+    const y = (v) => mt + ph - (v / 5) * ph;
+
+    let s = "";
+    // gridlines + y ticks
+    for (let v = 0; v <= 5; v++) {
+      s += `<line x1="${ml}" x2="${W - mr}" y1="${y(v)}" y2="${y(v)}" stroke="${v === 0 ? "var(--baseline)" : "var(--grid)"}" stroke-width="1"/>`;
+      s += `<text x="${ml - 9}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--text-muted)">${v}</text>`;
+    }
+    groups.forEach((gr, i) => {
+      const cx = ml + gw * i + gw / 2;
+      const xa = cx - bw - gap / 2, xb = cx + gap / 2;
+      const ha = (gr.a / 5) * ph, hb = (gr.b / 5) * ph;
+      s += `<path d="${barPath(xa, y(gr.a), bw, ha, 4)}" fill="var(--series-1)"
+             data-tip="${esc(state.modelA)} · ${esc(gr.label)}: ${fmt(gr.a)} / 5"/>`;
+      s += `<path d="${barPath(xb, y(gr.b), bw, hb, 4)}" fill="var(--series-2)"
+             data-tip="${esc(state.modelB)} · ${esc(gr.label)}: ${fmt(gr.b)} / 5"/>`;
+      s += `<text x="${xa + bw / 2}" y="${y(gr.a) - 7}" text-anchor="middle" font-size="11.5" fill="var(--text-secondary)">${fmt(gr.a, 1)}</text>`;
+      s += `<text x="${xb + bw / 2}" y="${y(gr.b) - 7}" text-anchor="middle" font-size="11.5" fill="var(--text-secondary)">${fmt(gr.b, 1)}</text>`;
+      s += `<text x="${cx}" y="${H - mb + 22}" text-anchor="middle" font-size="12.5" fill="var(--text-primary)"
+             font-weight="${gr.label === "Overall" ? 600 : 400}">${esc(gr.label)}</text>`;
+      if (gr.label !== "Overall") {
+        const w = normWeights()[CRITERIA[i].key];
+        s += `<text x="${cx}" y="${H - mb + 38}" text-anchor="middle" font-size="11" fill="var(--text-muted)">weight ${Math.round(w * 100)}%</text>`;
+      }
+    });
+    svg.innerHTML = s;
+
+    svg.querySelectorAll("[data-tip]").forEach(el => {
+      el.addEventListener("mousemove", (e) => showTip(e, el.dataset.tip));
+      el.addEventListener("mouseleave", hideTip);
+    });
+    $("chartNote").textContent = `Mean rubric score across ${g.n} eval${g.n === 1 ? "" : "s"}. "Overall" is the weighted composite.`;
+  }
+
+  const tip = $("tip");
+  function showTip(e, text) {
+    tip.textContent = text; tip.style.opacity = "1";
+    tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 250) + "px";
+    tip.style.top = (e.clientY - 34) + "px";
+  }
+  function hideTip() { tip.style.opacity = "0"; }
+
+  // ---------- log table ----------
+  function renderLog() {
+    const t = $("log");
+    if (!state.evals.length) {
+      t.innerHTML = `<tr><td class="empty">No evals yet — score a trial above, or load the demo session.</td></tr>`;
+      return;
+    }
+    const head = `<tr>
+      <th>#</th><th>Prompt</th>
+      ${CRITERIA.map(c => `<th>${c.label.slice(0, 4)} A/B</th>`).join("")}
+      <th>Weighted A/B</th><th>Winner</th><th>Pos.</th><th>Notes</th><th></th></tr>`;
+    const rows = state.evals.map((e, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="prompt-cell">${esc(e.prompt.length > 90 ? e.prompt.slice(0, 90) + "…" : e.prompt)}</td>
+        ${CRITERIA.map(c => `<td class="num">${e.a[c.key]} / ${e.b[c.key]}</td>`).join("")}
+        <td class="num">${fmt(e.wa)} / ${fmt(e.wb)}</td>
+        <td class="${e.winner === "A" ? "winA" : e.winner === "B" ? "winB" : "winT"}">
+          ${e.winner === "tie" ? "tie" : esc(e.winner === "A" ? state.modelA : state.modelB)}</td>
+        <td class="num" title="Which model was shown in the left pane">${e.leftIsA ? "A◀" : "B◀"}</td>
+        <td class="prompt-cell">${esc(e.notes)}</td>
+        <td><button class="rm" data-i="${i}" title="Delete this eval">✕</button></td>
+      </tr>`).join("");
+    t.innerHTML = head + rows;
+    t.querySelectorAll(".rm").forEach(b => b.addEventListener("click", () => {
+      state.evals.splice(Number(b.dataset.i), 1); save(); renderAll();
+    }));
+  }
+
+  // ---------- CSV ----------
+  function toCSV() {
+    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const cols = ["n", "timestamp", "session", "prompt", "model_a", "model_b",
+      ...CRITERIA.flatMap(c => [`a_${c.key}`, `b_${c.key}`]),
+      ...CRITERIA.map(c => `weight_${c.key}`),
+      "a_weighted", "b_weighted", "winner", "left_pane_model", "notes", "response_a", "response_b"];
+    const w = normWeights();
+    const lines = state.evals.map((e, i) => [
+      i + 1, e.t, state.sessionName, e.prompt, state.modelA, state.modelB,
+      ...CRITERIA.flatMap(c => [e.a[c.key], e.b[c.key]]),
+      ...CRITERIA.map(c => w[c.key].toFixed(3)),
+      e.wa.toFixed(3), e.wb.toFixed(3),
+      e.winner === "tie" ? "tie" : (e.winner === "A" ? state.modelA : state.modelB),
+      e.leftIsA ? state.modelA : state.modelB,
+      e.notes, e.textA, e.textB,
+    ].map(q).join(","));
+    return [cols.map(q).join(","), ...lines].join("\r\n");
+  }
+  function exportCSV() {
+    if (!state.evals.length) return;
+    const slug = (state.sessionName || "llm-eval-session").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const blob = new Blob(["﻿" + toCSV()], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${slug}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---------- weights UI ----------
+  function renderWeights() {
+    $("weightBox").innerHTML = CRITERIA.map(c => `
+      <label class="toggle" style="gap:5px">${c.label}
+        <input type="number" min="0" max="10" step="0.1" value="${state.weights[c.key]}" data-w="${c.key}" />
+      </label>`).join("");
+    // Re-render the note, never the inputs — rebuilding them mid-keystroke steals focus.
+    $("weightBox").querySelectorAll("input").forEach(inp => inp.addEventListener("input", () => {
+      state.weights[inp.dataset.w] = Number(inp.value);
+      save(); recomputeStored(); updateWeightNote(); renderAll(); renderTrial();
+    }));
+    updateWeightNote();
+  }
+  function updateWeightNote() {
+    const w = normWeights();
+    $("weightNote").textContent = "Normalized: " + CRITERIA.map(c => `${c.label} ${Math.round(w[c.key] * 100)}%`).join(" · ")
+      + ". Changing weights re-scores every saved eval.";
+  }
+  // Raw 1–5 scores are the source of truth; composites are derived, so a weight
+  // change retroactively re-scores the whole session instead of stranding old rows.
+  function recomputeStored() {
+    for (const e of state.evals) {
+      e.wa = weighted(e.a); e.wb = weighted(e.b);
+      e.winner = e.wa > e.wb ? "A" : e.wb > e.wa ? "B" : "tie";
+    }
+    save();
+  }
+
+  // ---------- demo ----------
+  const DEMO = [
+    ["A customer says their order shipped to an old address. What are their options?",
+      { helpfulness: 5, accuracy: 5, tone: 4 }, { helpfulness: 3, accuracy: 2, tone: 5 },
+      "B invented a 24-hour address-change window that doesn't exist."],
+    ["Explain why my supplement subscription was charged twice this month.",
+      { helpfulness: 4, accuracy: 5, tone: 4 }, { helpfulness: 4, accuracy: 4, tone: 3 },
+      "Both fine; B skipped the refund timeline."],
+    ["Write a 2-sentence apology for a delayed international shipment.",
+      { helpfulness: 3, accuracy: 4, tone: 3 }, { helpfulness: 5, accuracy: 4, tone: 5 },
+      "B's version was warmer and shorter — clear win on tone."],
+    ["Is creatine safe to take with a beta blocker?",
+      { helpfulness: 4, accuracy: 5, tone: 5 }, { helpfulness: 5, accuracy: 2, tone: 4 },
+      "B gave confident medical advice without a referral caveat. Serious."],
+    ["Summarize this 400-word return policy for a mobile card.",
+      { helpfulness: 5, accuracy: 5, tone: 4 }, { helpfulness: 4, accuracy: 5, tone: 4 },
+      ""],
+    ["Customer is angry about a missing item and used profanity. Respond.",
+      { helpfulness: 4, accuracy: 5, tone: 5 }, { helpfulness: 4, accuracy: 5, tone: 2 },
+      "B mirrored the frustration back — reads defensive."],
+    ["What's the difference between our Plus and Pro plan for a small seller?",
+      { helpfulness: 5, accuracy: 4, tone: 4 }, { helpfulness: 3, accuracy: 5, tone: 4 },
+      "A was more useful, B more literal."],
+    ["Translate this order-confirmation email into Simplified Chinese.",
+      { helpfulness: 4, accuracy: 4, tone: 4 }, { helpfulness: 4, accuracy: 5, tone: 4 },
+      "B handled the address format correctly."],
+  ];
+  function loadDemo() {
+    if (state.evals.length && !confirm("Replace the current session with the demo data?")) return;
+    state = fresh();
+    state.sessionName = "Support replies — GPT-class v3 vs v4";
+    state.modelA = "Assistant v3"; state.modelB = "Assistant v4";
+    state.evals = DEMO.map(([prompt, a, b, notes], i) => ({
+      t: new Date(Date.now() - (DEMO.length - i) * 6e5).toISOString(),
+      prompt, a, b, wa: weighted(a), wb: weighted(b),
+      winner: weighted(a) > weighted(b) ? "A" : weighted(b) > weighted(a) ? "B" : "tie",
+      leftIsA: i % 3 !== 1, notes, textA: "", textB: "",
+    }));
+    save(); syncInputs(); renderAll(); renderTrial();
+  }
+
+  // ---------- wiring ----------
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, ch =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+  function syncInputs() {
+    $("sessName").value = state.sessionName;
+    $("modelA").value = state.modelA;
+    $("modelB").value = state.modelB;
+    $("blind").checked = state.blind;
+    renderWeights();
+  }
+  function renderAll() { renderTiles(); renderChart(); renderLog(); $("exportBtn").disabled = !state.evals.length; }
+
+  $("sessName").addEventListener("input", e => { state.sessionName = e.target.value; save(); });
+  $("modelA").addEventListener("input", e => { state.modelA = e.target.value || "Model A"; save(); renderAll(); renderTrial(); });
+  $("modelB").addEventListener("input", e => { state.modelB = e.target.value || "Model B"; save(); renderAll(); renderTrial(); });
+  $("blind").addEventListener("change", e => { state.blind = e.target.checked; save(); renderTrial(); });
+  $("prompt").addEventListener("input", e => { trial.prompt = e.target.value; updateSaveHint(); });
+  $("notes").addEventListener("input", e => { trial.notes = e.target.value; });
+  $("saveBtn").addEventListener("click", saveEval);
+  $("clearTrial").addEventListener("click", () => { trial = newTrial(); renderTrial(); });
+  $("exportBtn").addEventListener("click", exportCSV);
+  $("demoBtn").addEventListener("click", loadDemo);
+  $("resetBtn").addEventListener("click", () => {
+    if (!confirm("Clear all saved evals in this session?")) return;
+    state.evals = []; save(); renderAll();
+  });
+  $("themeBtn").addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme");
+    const next = cur === "dark" ? "light" : cur === "light" ? "dark"
+      : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", next);
+    renderChart();
+  });
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); saveEval(); }
+  });
+
+  syncInputs(); renderTrial(); renderAll();
+})();
+</script>
+</body>
+</html>
