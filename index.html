@@ -93,7 +93,7 @@
   }
 
   .row { display: grid; gap: 14px; }
-  .row.c3 { grid-template-columns: 2fr 1fr 1fr; }
+  .row.c3 { grid-template-columns: 2fr 1fr 1fr 0.7fr; }
   .row.c2 { grid-template-columns: 1fr 1fr; }
   @media (max-width: 800px) { .row.c3, .row.c2 { grid-template-columns: 1fr; } }
 
@@ -137,6 +137,7 @@
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
   .tile { border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 14px; background: var(--plane); }
   .tile .k { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .tile .k .keep, th .keep { text-transform: none; }
   .tile .v { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 4px; }
   .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 
@@ -164,6 +165,19 @@
   .winT { color: var(--text-muted); font-weight: 600; }
   .empty { color: var(--text-muted); font-size: 13.5px; padding: 18px 0; text-align: center; }
   .note { font-size: 12.5px; color: var(--text-muted); margin-top: 10px; }
+
+  /* confidence interval strip */
+  .ci { margin: 4px 0 2px; }
+  .ci-track { position: relative; height: 30px; border-radius: var(--radius);
+    background: var(--plane); border: 1px solid var(--border); }
+  .ci-zero { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px;
+    background: var(--text-muted); opacity: .55; }
+  .ci-band { position: absolute; top: 9px; height: 12px; border-radius: 6px; opacity: .55; z-index: 1; }
+  .ci-point { position: absolute; top: 4px; width: 3px; height: 22px; border-radius: 2px;
+    background: var(--text-primary); z-index: 2; }
+  .ci-axis { display: flex; justify-content: space-between; font-size: 11.5px;
+    color: var(--text-muted); margin-top: 6px; }
+  #iaaTable th, #iaaTable td { white-space: nowrap; }
   .rm { border: none; background: none; color: var(--text-muted); padding: 2px 6px; }
   .rm:hover { color: #d03b3b; background: none; }
 </style>
@@ -197,6 +211,10 @@
       <div>
         <label class="f" for="modelB">Model B</label>
         <input type="text" id="modelB" placeholder="Model B" />
+      </div>
+      <div>
+        <label class="f" for="raterId">Rater ID</label>
+        <input type="text" id="raterId" placeholder="R1" />
       </div>
     </div>
     <div class="btnrow" style="margin-top:14px">
@@ -240,6 +258,34 @@
     <p class="note" id="chartNote"></p>
   </section>
 
+  <!-- CONFIDENCE -->
+  <section class="card">
+    <h2>Can you act on this yet?</h2>
+    <p class="note" style="margin-top:-4px;margin-bottom:14px">
+      The aggregate above says who is ahead. This says whether the lead would survive
+      a second sample of the same size.</p>
+    <div class="tiles" id="statTiles"></div>
+    <div id="ciStrip"></div>
+    <p class="note" id="statNote"></p>
+  </section>
+
+  <!-- RELIABILITY -->
+  <section class="card">
+    <h2>Rater reliability</h2>
+    <p class="note" style="margin-top:-4px;margin-bottom:14px">
+      Before a scorecard can measure a model, it has to measure the same way twice.
+      Have a second rater score the same prompts, export their session, and import it
+      here &mdash; agreement is computed on the prompts you both covered.</p>
+    <div class="tiles" id="iaaTiles"></div>
+    <div class="tablewrap"><table id="iaaTable"></table></div>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="ghost" id="importBtn">Import another rater&rsquo;s CSV</button>
+      <input type="file" id="importFile" accept=".csv,text/csv" style="display:none" />
+      <span id="importHint" style="font-size:12.5px;color:var(--text-muted)"></span>
+    </div>
+    <p class="note" id="iaaNote"></p>
+  </section>
+
   <!-- LOG -->
   <section class="card">
     <h2>Eval log</h2>
@@ -275,6 +321,7 @@
     modelA: "Model A",
     modelB: "Model B",
     blind: true,
+    rater: "R1",
     weights: Object.fromEntries(CRITERIA.map(c => [c.key, c.w])),
     evals: [],
   });
@@ -287,7 +334,10 @@
       const raw = localStorage.getItem(KEY);
       if (!raw) return fresh();
       const s = JSON.parse(raw);
-      return Object.assign(fresh(), s);
+      const st = Object.assign(fresh(), s);
+      // v1 sessions predate multi-rater support; everything in them is rater one.
+      for (const e of st.evals) if (!e.rater) e.rater = "R1";
+      return st;
     } catch { return fresh(); }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} }
@@ -394,6 +444,7 @@
       a, b, wa, wb,
       winner: wa > wb ? "A" : wb > wa ? "B" : "tie",
       leftIsA: trial.leftIsA,
+      rater: state.rater || "R1",
       notes: trial.notes.trim(),
       textA: trial[aSide].text, textB: trial[bSide].text,
     });
@@ -401,6 +452,195 @@
     trial = newTrial();
     renderTrial(); renderAll();
     $("prompt").focus();
+  }
+
+
+  // ---------- statistics ----------
+  // Everything here is deliberately dependency-free and deterministic: the same
+  // saved session always produces the same interval, so two people reading the
+  // same scorecard argue about the model, not about the seed.
+  const STAT = (() => {
+    function lgamma(x) {
+      const g = 7, c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+        771.32342877765313, -176.61502916214059, 12.507343278686905,
+        -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+      if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+      x -= 1;
+      let a = c[0]; const t = x + g + 0.5;
+      for (let i = 1; i < g + 2; i++) a += c[i] / (x + i);
+      return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+    }
+    const lchoose = (n, k) => lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1);
+    const binomPMF = (k, n, p) => Math.exp(lchoose(n, k) + k * Math.log(p) + (n - k) * Math.log(1 - p));
+
+    // Two-sided exact binomial test against p (method of small p-values, as in R's
+    // binom.test). Exact rather than normal-approximate because eval sessions are
+    // small - n=12 is where the approximation starts lying to you.
+    function binomTest(k, n, p = 0.5) {
+      if (!n || k < 0 || k > n) return NaN;
+      const obs = binomPMF(k, n, p);
+      let s = 0;
+      for (let i = 0; i <= n; i++) {
+        const q = binomPMF(i, n, p);
+        if (q <= obs * (1 + 1e-9)) s += q;
+      }
+      return Math.min(1, s);
+    }
+
+    // Seeded PRNG so the bootstrap is reproducible across reloads and machines.
+    function mulberry32(a) {
+      return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+      };
+    }
+
+    // Percentile bootstrap on the paired per-trial gap (wa - wb). Paired, because
+    // both models answered the same prompt - the prompt-to-prompt variance is
+    // shared and should not be charged against the comparison.
+    function bootstrapGap(evals, B = 2000, seed = 0x5EED) {
+      const n = evals.length;
+      if (n < 2) return null;
+      const d = evals.map(e => e.wa - e.wb);
+      const point = d.reduce((t, v) => t + v, 0) / n;
+      const rnd = mulberry32(seed);
+      const reps = new Array(B);
+      for (let b = 0; b < B; b++) {
+        let s = 0;
+        for (let i = 0; i < n; i++) s += d[(rnd() * n) | 0];
+        reps[b] = s / n;
+      }
+      reps.sort((x, y) => x - y);
+      const q = (p) => reps[Math.max(0, Math.min(B - 1, Math.round(p * (B - 1))))];
+      const lo = q(0.025), hi = q(0.975);
+      return { point, lo, hi, B, crossesZero: lo <= 0 && hi >= 0 };
+    }
+
+    // Krippendorff's alpha with the ordinal difference function. Chosen over
+    // percent-agreement because 1-5 scores are ordinal (a 4-vs-5 disagreement is
+    // not the same failure as 1-vs-5), and over Fleiss' kappa because alpha
+    // tolerates missing data - real annotation sets are ragged.
+    function krippendorffOrdinal(units) {
+      const used = units.filter(u => u.length >= 2);
+      if (!used.length) return NaN;
+      const vals = [...new Set(used.flat())].sort((a, b) => a - b);
+      const idx = new Map(vals.map((v, i) => [v, i]));
+      const K = vals.length;
+      const o = Array.from({ length: K }, () => new Float64Array(K));
+      for (const u of used) {
+        const m = u.length;
+        for (let i = 0; i < m; i++) for (let j = 0; j < m; j++) {
+          if (i === j) continue;
+          o[idx.get(u[i])][idx.get(u[j])] += 1 / (m - 1);
+        }
+      }
+      const nc = o.map(row => row.reduce((a, b) => a + b, 0));
+      const n = nc.reduce((a, b) => a + b, 0);
+      if (n < 2) return NaN;
+      const d2 = (ci, ki) => {
+        const lo = Math.min(ci, ki), hi = Math.max(ci, ki);
+        let s = 0;
+        for (let g = lo; g <= hi; g++) s += nc[g];
+        const v = s - (nc[lo] + nc[hi]) / 2;
+        return v * v;
+      };
+      let Do = 0, De = 0;
+      for (let c = 0; c < K; c++) for (let k = 0; k < K; k++) {
+        const dd = d2(c, k);
+        Do += o[c][k] * dd;
+        De += nc[c] * nc[k] * dd;
+      }
+      Do /= n; De /= (n * (n - 1));
+      return De ? 1 - Do / De : NaN;
+    }
+
+    // Quadratic-weighted Cohen's kappa for exactly two raters - the number most
+    // annotation vendors quote, kept alongside alpha so the scorecard speaks both
+    // dialects.
+    function weightedKappa(pairs, minV = 1, maxV = 5) {
+      const N = pairs.length;
+      if (!N) return NaN;
+      const K = maxV - minV + 1;
+      const O = Array.from({ length: K }, () => new Float64Array(K));
+      for (const [a, b] of pairs) {
+        if (a < minV || a > maxV || b < minV || b > maxV) continue;
+        O[a - minV][b - minV]++;
+      }
+      const r = new Float64Array(K), c = new Float64Array(K);
+      for (let i = 0; i < K; i++) for (let j = 0; j < K; j++) { r[i] += O[i][j]; c[j] += O[i][j]; }
+      const w = (i, j) => ((i - j) * (i - j)) / ((K - 1) * (K - 1));
+      let num = 0, den = 0;
+      for (let i = 0; i < K; i++) for (let j = 0; j < K; j++) {
+        num += w(i, j) * O[i][j] / N;
+        den += w(i, j) * (r[i] / N) * (c[j] / N);
+      }
+      return den ? 1 - num / den : NaN;
+    }
+
+    // How many trials would it take? Normal approximation, two-sided alpha=.05,
+    // power=.80 - labelled as approximate in the UI, because it is.
+    function nForWinRate(p) {
+      if (!Number.isFinite(p) || Math.abs(p - 0.5) < 1e-6) return Infinity;
+      const num = 1.959964 * 0.5 + 0.8416212 * Math.sqrt(p * (1 - p));
+      return Math.ceil(Math.pow(num / (p - 0.5), 2));
+    }
+    // Smallest win rate detectable at the current n, same alpha and power.
+    function mdeWinRate(n) {
+      if (!n || n < 2) return NaN;
+      let p = 0.75;
+      for (let i = 0; i < 80; i++) {
+        const next = 0.5 + (1.959964 * 0.5 + 0.8416212 * Math.sqrt(p * (1 - p))) / Math.sqrt(n);
+        if (next >= 0.999) return 0.999;
+        if (Math.abs(next - p) < 1e-9) { p = next; break; }
+        p = next;
+      }
+      return p;
+    }
+
+    const alphaBand = (a) => !Number.isFinite(a) ? "-"
+      : a >= 0.8 ? "publishable" : a >= 0.667 ? "tentative only" : "not reliable";
+
+    return { binomTest, bootstrapGap, krippendorffOrdinal, weightedKappa, nForWinRate, mdeWinRate, alphaBand };
+  })();
+
+  // ---------- rater bookkeeping ----------
+  const RATER_OF = (e) => e.rater || "R1";
+  const raters = () => [...new Set(state.evals.map(RATER_OF))].sort();
+
+  // A unit is one (prompt x model) cell. Two raters who scored the same prompt
+  // give that unit two observations; alpha is computed over units, per criterion.
+  function unitsFor(critKey) {
+    const m = new Map();
+    for (const e of state.evals) {
+      const rid = RATER_OF(e);
+      for (const side of ["a", "b"]) {
+        const key = side + " " + (e.prompt || "").trim().toLowerCase();
+        if (!m.has(key)) m.set(key, new Map());
+        const cell = m.get(key);
+        const v = Number(e[side][critKey]);
+        if (v > 0 && !cell.has(rid)) cell.set(rid, v);   // first score a rater gave wins
+      }
+    }
+    return [...m.values()].map(cell => [...cell.values()]);
+  }
+
+  function pairsFor(critKey, r1, r2) {
+    const m = new Map();
+    for (const e of state.evals) {
+      const rid = RATER_OF(e);
+      if (rid !== r1 && rid !== r2) continue;
+      for (const side of ["a", "b"]) {
+        const key = side + " " + (e.prompt || "").trim().toLowerCase();
+        if (!m.has(key)) m.set(key, {});
+        const v = Number(e[side][critKey]);
+        if (v > 0 && m.get(key)[rid] == null) m.get(key)[rid] = v;
+      }
+    }
+    const out = [];
+    for (const cell of m.values()) if (cell[r1] > 0 && cell[r2] > 0) out.push([cell[r1], cell[r2]]);
+    return out;
   }
 
   // ---------- aggregate ----------
@@ -524,10 +764,11 @@
       t.innerHTML = `<tr><td class="empty">No evals yet — score a trial above, or load the demo session.</td></tr>`;
       return;
     }
+    const multi = raters().length > 1;
     const head = `<tr>
       <th>#</th><th>Prompt</th>
       ${CRITERIA.map(c => `<th>${c.label.slice(0, 4)} A/B</th>`).join("")}
-      <th>Weighted A/B</th><th>Winner</th><th>Pos.</th><th>Notes</th><th></th></tr>`;
+      <th>Weighted A/B</th><th>Winner</th><th>Pos.</th>${multi ? "<th>Rater</th>" : ""}<th>Notes</th><th></th></tr>`;
     const rows = state.evals.map((e, i) => `
       <tr>
         <td class="num">${i + 1}</td>
@@ -537,6 +778,7 @@
         <td class="${e.winner === "A" ? "winA" : e.winner === "B" ? "winB" : "winT"}">
           ${e.winner === "tie" ? "tie" : esc(e.winner === "A" ? state.modelA : state.modelB)}</td>
         <td class="num" title="Which model was shown in the left pane">${e.leftIsA ? "A◀" : "B◀"}</td>
+        ${multi ? `<td>${esc(RATER_OF(e))}</td>` : ""}
         <td class="prompt-cell">${esc(e.notes)}</td>
         <td><button class="rm" data-i="${i}" title="Delete this eval">✕</button></td>
       </tr>`).join("");
@@ -549,13 +791,13 @@
   // ---------- CSV ----------
   function toCSV() {
     const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const cols = ["n", "timestamp", "session", "prompt", "model_a", "model_b",
+    const cols = ["n", "timestamp", "rater", "session", "prompt", "model_a", "model_b",
       ...CRITERIA.flatMap(c => [`a_${c.key}`, `b_${c.key}`]),
       ...CRITERIA.map(c => `weight_${c.key}`),
       "a_weighted", "b_weighted", "winner", "left_pane_model", "notes", "response_a", "response_b"];
     const w = normWeights();
     const lines = state.evals.map((e, i) => [
-      i + 1, e.t, state.sessionName, e.prompt, state.modelA, state.modelB,
+      i + 1, e.t, RATER_OF(e), state.sessionName, e.prompt, state.modelA, state.modelB,
       ...CRITERIA.flatMap(c => [e.a[c.key], e.b[c.key]]),
       ...CRITERIA.map(c => w[c.key].toFixed(3)),
       e.wa.toFixed(3), e.wb.toFixed(3),
@@ -574,6 +816,77 @@
     a.download = `${slug}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+
+  // ---------- CSV import (a second rater's export) ----------
+  // The export format is the import format on purpose: the CSV is the interchange
+  // protocol between raters, so no backend is needed to run a multi-rater study.
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], field = "", q = false;
+    text = text.replace(/^﻿/, "");
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) {
+        if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+        else field += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ",") { row.push(field); field = ""; }
+      else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else if (ch !== "\r") field += ch;
+    }
+    if (field.length || row.length) { row.push(field); rows.push(row); }
+    return rows.filter(r => r.length > 1 || (r[0] || "").trim() !== "");
+  }
+
+  function importCSV(text, fallbackRater) {
+    const rows = parseCSV(text);
+    if (rows.length < 2) throw new Error("no rows found");
+    const head = rows[0].map(h => h.trim().toLowerCase());
+    const col = (name) => head.indexOf(name);
+    const need = CRITERIA.flatMap(c => [`a_${c.key}`, `b_${c.key}`]);
+    const missing = ["prompt", ...need].filter(nm => col(nm) < 0);
+    if (missing.length) throw new Error("missing column(s): " + missing.join(", "));
+
+    const rCol = col("rater");
+    const added = [];
+    for (const r of rows.slice(1)) {
+      const get = (nm) => (r[col(nm)] ?? "").trim();
+      const prompt = get("prompt");
+      if (!prompt) continue;
+      const a = {}, b = {};
+      let ok = true;
+      for (const c of CRITERIA) {
+        a[c.key] = Number(get(`a_${c.key}`));
+        b[c.key] = Number(get(`b_${c.key}`));
+        if (!(a[c.key] >= 1 && a[c.key] <= 5 && b[c.key] >= 1 && b[c.key] <= 5)) ok = false;
+      }
+      if (!ok) continue;
+      const rater = (rCol >= 0 ? (r[rCol] || "").trim() : "") || fallbackRater;
+      const leftName = col("left_pane_model") >= 0 ? get("left_pane_model") : "";
+      added.push({
+        t: col("timestamp") >= 0 && get("timestamp") ? get("timestamp") : new Date().toISOString(),
+        prompt, a, b, wa: weighted(a), wb: weighted(b),
+        winner: weighted(a) > weighted(b) ? "A" : weighted(b) > weighted(a) ? "B" : "tie",
+        // If the exporting session used different model names we cannot recover the
+        // pane order, so fall back to A-left rather than inventing a randomization.
+        leftIsA: leftName ? leftName === (col("model_a") >= 0 ? get("model_a") : state.modelA) : true,
+        notes: col("notes") >= 0 ? get("notes") : "",
+        textA: col("response_a") >= 0 ? get("response_a") : "",
+        textB: col("response_b") >= 0 ? get("response_b") : "",
+        rater,
+      });
+    }
+    if (!added.length) throw new Error("no scorable rows (need 1-5 in every criterion column)");
+
+    // Drop rows this rater already contributed for the same prompt, so re-importing
+    // a corrected file replaces rather than double-counts.
+    const incoming = new Set(added.map(e => e.rater + " " + e.prompt.trim().toLowerCase()));
+    state.evals = state.evals.filter(e => !incoming.has(RATER_OF(e) + " " + (e.prompt || "").trim().toLowerCase()));
+    state.evals.push(...added);
+    save();
+    return { added: added.length, raters: [...new Set(added.map(e => e.rater))] };
   }
 
   // ---------- weights UI ----------
@@ -602,6 +915,152 @@
       e.winner = e.wa > e.wb ? "A" : e.wb > e.wa ? "B" : "tie";
     }
     save();
+  }
+
+
+  // ---------- confidence rendering ----------
+  function statPack() {
+    const evals = state.evals;
+    const n = evals.length;
+    const decided = evals.filter(e => e.winner !== "tie");
+    const m = decided.length;
+    const winA = decided.filter(e => e.winner === "A").length;
+    const leftWins = decided.filter(e => (e.winner === "A") === e.leftIsA).length;
+    const boot = STAT.bootstrapGap(evals);
+    const pWin = m ? STAT.binomTest(winA, m, 0.5) : NaN;
+    const pPos = m ? STAT.binomTest(leftWins, m, 0.5) : NaN;
+    const obsRate = m ? Math.max(winA, m - winA) / m : NaN;
+    return { n, m, winA, leftWins, boot, pWin, pPos, obsRate,
+             need: STAT.nForWinRate(obsRate), mde: STAT.mdeWinRate(m) };
+  }
+
+  const pFmt = (p) => !Number.isFinite(p) ? "&mdash;" : p < 0.001 ? "&lt;0.001" : p.toFixed(3);
+
+  function renderStats() {
+    const s = statPack();
+    if (!s.n) {
+      $("statTiles").innerHTML = `<div class="tile"><div class="k">Status</div>
+        <div class="v" style="font-size:19px">No data</div>
+        <div class="sub">score a trial, or load the demo</div></div>`;
+      $("ciStrip").innerHTML = "";
+      $("statNote").textContent = "";
+      return;
+    }
+    const real = s.boot && !s.boot.crossesZero;
+    const verdictText = !s.boot ? "Need 2+ evals"
+      : real ? "Lead holds up" : "Too close to call";
+    const verdictColor = !s.boot ? "var(--text-muted)"
+      : real ? "var(--series-1)" : "var(--warning)";
+    const biasFlag = Number.isFinite(s.pPos) && s.pPos < 0.05;
+
+    $("statTiles").innerHTML = `
+      <div class="tile"><div class="k">Verdict</div>
+        <div class="v" style="font-size:19px;color:${verdictColor}">${verdictText}</div>
+        <div class="sub">${s.boot ? "from the 95% CI below" : "&mdash;"}</div></div>
+      <div class="tile"><div class="k">Gap (A &minus; B)</div>
+        <div class="v">${s.boot ? (s.boot.point >= 0 ? "+" : "") + fmt(s.boot.point) : "&mdash;"}</div>
+        <div class="sub">${s.boot ? `95% CI ${fmt(s.boot.lo)} to ${fmt(s.boot.hi)}` : "&mdash;"}</div></div>
+      <div class="tile"><div class="k">Win-rate test</div>
+        <div class="v">p ${pFmt(s.pWin)}</div>
+        <div class="sub">${s.winA} of ${s.m} decided trials</div></div>
+      <div class="tile"><div class="k">Position bias</div>
+        <div class="v" style="${biasFlag ? "color:var(--warning)" : ""}">p ${pFmt(s.pPos)}</div>
+        <div class="sub">${biasFlag ? "&#9873; left pane is winning too often" : "left pane within noise"}</div></div>
+      <div class="tile"><div class="k">Trials needed</div>
+        <div class="v">${Number.isFinite(s.need) ? s.need : "&infin;"}</div>
+        <div class="sub">you have ${s.m} decided</div></div>`;
+
+    // Interval strip: where the CI sits relative to a gap of zero.
+    if (s.boot) {
+      const span = Math.max(0.35, Math.abs(s.boot.lo), Math.abs(s.boot.hi)) * 1.25;
+      const pct = (v) => ((v + span) / (2 * span)) * 100;
+      const l = pct(s.boot.lo), r = pct(s.boot.hi), p = pct(s.boot.point);
+      $("ciStrip").innerHTML = `
+        <div class="ci">
+          <div class="ci-track">
+            <div class="ci-zero"></div>
+            <div class="ci-band" style="left:${l}%;width:${Math.max(0.6, r - l)}%;
+              background:${real ? "var(--series-1)" : "var(--warning)"}"></div>
+            <div class="ci-point" style="left:${p}%"></div>
+          </div>
+          <div class="ci-axis"><span>B better</span><span>0 &mdash; no difference</span><span>A better</span></div>
+        </div>`;
+    } else $("ciStrip").innerHTML = "";
+
+    const parts = [];
+    parts.push(s.boot
+      ? (real
+        ? `The whole 95% interval sits on one side of zero, so the lead is not an artifact of which prompts happened to land in this sample.`
+        : `The 95% interval straddles zero &mdash; on this evidence the two models are not distinguishable, whatever the point estimate says.`)
+      : `Two evals is the minimum for an interval.`);
+    if (Number.isFinite(s.need) && s.m < s.need)
+      parts.push(`At the observed ${Math.round(s.obsRate * 100)}% win rate you would need about ${s.need} decided trials for an exact binomial test to reach p&lt;0.05 at 80% power; the smallest win rate ${s.m} trials could detect is ${Math.round(s.mde * 100)}%.`);
+    if (biasFlag)
+      parts.push(`Left-pane wins are out of line with chance (p ${pFmt(s.pPos)}) &mdash; treat the model comparison as confounded until you re-run with fresh randomization.`);
+    $("statNote").innerHTML = parts.join(" ") + " Bootstrap: 2,000 paired resamples, fixed seed, so this interval is reproducible.";
+  }
+
+  // ---------- reliability rendering ----------
+  function renderIAA() {
+    const rs = raters();
+    const overallUnits = CRITERIA.flatMap(c => unitsFor(c.key));
+    const overlap = overallUnits.filter(u => u.length >= 2).length;
+
+    if (rs.length < 2 || !overlap) {
+      $("iaaTiles").innerHTML = `
+        <div class="tile"><div class="k">Raters</div><div class="v">${rs.length}</div>
+          <div class="sub">${rs.map(esc).join(", ") || "&mdash;"}</div></div>
+        <div class="tile"><div class="k">Double-scored cells</div><div class="v">0</div>
+          <div class="sub">nothing to compare yet</div></div>`;
+      $("iaaTable").innerHTML = "";
+      $("iaaNote").innerHTML = rs.length < 2
+        ? `A single-rater scorecard cannot tell a real quality gap from one person&rsquo;s drift. Set a rater ID above, have a colleague score the <em>same prompts</em> in their own browser, then import their CSV here.`
+        : `Rater ${esc(rs.join(" and "))} have no prompts in common &mdash; agreement needs overlapping prompts, not just overlapping sessions.`;
+      return;
+    }
+
+    const alphaAll = STAT.krippendorffOrdinal(overallUnits);
+    const band = STAT.alphaBand(alphaAll);
+    const bandColor = alphaAll >= 0.8 ? "var(--series-1)" : alphaAll >= 0.667 ? "var(--warning)" : "var(--series-2)";
+
+    $("iaaTiles").innerHTML = `
+      <div class="tile"><div class="k">Raters</div><div class="v">${rs.length}</div>
+        <div class="sub">${rs.map(esc).join(", ")}</div></div>
+      <div class="tile"><div class="k">Krippendorff <span class="keep">&alpha;</span></div>
+        <div class="v" style="color:${bandColor}">${fmt(alphaAll, 3)}</div>
+        <div class="sub">ordinal, all criteria</div></div>
+      <div class="tile"><div class="k">Reliability</div>
+        <div class="v" style="font-size:19px;color:${bandColor}">${band}</div>
+        <div class="sub">&alpha; &ge; .80 publishable, &ge; .667 tentative</div></div>
+      <div class="tile"><div class="k">Double-scored cells</div><div class="v">${overlap}</div>
+        <div class="sub">prompt &times; model pairs</div></div>`;
+
+    const pairRs = rs.length === 2 ? rs : null;
+    const rows = CRITERIA.map(c => {
+      const u = unitsFor(c.key);
+      const a = STAT.krippendorffOrdinal(u);
+      const ov = u.filter(x => x.length >= 2).length;
+      const k = pairRs ? STAT.weightedKappa(pairsFor(c.key, pairRs[0], pairRs[1])) : NaN;
+      const col = a >= 0.8 ? "var(--series-1)" : a >= 0.667 ? "var(--warning)" : "var(--series-2)";
+      return `<tr><td>${c.label}</td>
+        <td class="num" style="color:${col}">${fmt(a, 3)}</td>
+        <td class="num">${pairRs ? fmt(k, 3) : "&mdash;"}</td>
+        <td class="num">${ov}</td>
+        <td>${STAT.alphaBand(a)}</td></tr>`;
+    }).join("");
+    $("iaaTable").innerHTML = `<tr><th>Criterion</th><th>Krippendorff <span class="keep">&alpha;</span></th>
+      <th>Cohen <span class="keep">&kappa;</span><sub>w</sub></th><th>Cells</th><th>Read</th></tr>` + rows;
+
+    const worst = CRITERIA
+      .map(c => ({ label: c.label, a: STAT.krippendorffOrdinal(unitsFor(c.key)) }))
+      .filter(x => Number.isFinite(x.a))
+      .sort((x, y) => x.a - y.a)[0];
+    $("iaaNote").innerHTML =
+      (alphaAll >= 0.8
+        ? `Agreement is high enough that the model comparison above is measuring the models, not the raters.`
+        : `Agreement is below the .80 bar, which means part of the gap above is rater noise. Fix the rubric before you trust the verdict.`)
+      + (worst ? ` Weakest criterion: <strong>${esc(worst.label)}</strong> (&alpha; ${fmt(worst.a, 3)}) &mdash; that is the rubric line whose wording needs the work.` : "")
+      + ` &kappa;<sub>w</sub> is quadratic-weighted and only defined for exactly two raters; &alpha; handles any number and tolerates raters who skipped prompts.`;
   }
 
   // ---------- demo ----------
@@ -636,11 +1095,30 @@
     state = fresh();
     state.sessionName = "Support replies — GPT-class v3 vs v4";
     state.modelA = "Assistant v3"; state.modelB = "Assistant v4";
+    state.rater = "R1";
     state.evals = DEMO.map(([prompt, a, b, notes], i) => ({
       t: new Date(Date.now() - (DEMO.length - i) * 6e5).toISOString(),
       prompt, a, b, wa: weighted(a), wb: weighted(b),
       winner: weighted(a) > weighted(b) ? "A" : weighted(b) > weighted(a) ? "B" : "tie",
-      leftIsA: i % 3 !== 1, notes, textA: "", textB: "",
+      leftIsA: i % 3 !== 1, notes, textA: "", textB: "", rater: "R1",
+    }));
+    // A second rater over the first six prompts, so the demo shows what an
+    // agreement number looks like instead of an empty panel. R2 is deliberately
+    // a little harsher on tone -- that is the disagreement alpha should surface.
+    state.evals.push(...DEMO.slice(0, 6).map(([prompt, a, b], i) => {
+      const nudge = (v, d) => Math.max(1, Math.min(5, v + d));
+      const a2 = { helpfulness: nudge(a.helpfulness, i % 3 === 0 ? -1 : 0),
+                   accuracy: nudge(a.accuracy, 0),
+                   tone: nudge(a.tone, i % 2 === 0 ? -1 : 0) };
+      const b2 = { helpfulness: nudge(b.helpfulness, i % 4 === 1 ? 1 : 0),
+                   accuracy: nudge(b.accuracy, i % 3 === 2 ? -1 : 0),
+                   tone: nudge(b.tone, -1) };
+      return {
+        t: new Date(Date.now() - (6 - i) * 3e5).toISOString(),
+        prompt, a: a2, b: b2, wa: weighted(a2), wb: weighted(b2),
+        winner: weighted(a2) > weighted(b2) ? "A" : weighted(b2) > weighted(a2) ? "B" : "tie",
+        leftIsA: i % 2 === 0, notes: "", textA: "", textB: "", rater: "R2",
+      };
     }));
     save(); syncInputs(); renderAll(); renderTrial();
   }
@@ -654,9 +1132,13 @@
     $("modelA").value = state.modelA;
     $("modelB").value = state.modelB;
     $("blind").checked = state.blind;
+    $("raterId").value = state.rater || "R1";
     renderWeights();
   }
-  function renderAll() { renderTiles(); renderChart(); renderLog(); $("exportBtn").disabled = !state.evals.length; }
+  function renderAll() {
+    renderTiles(); renderChart(); renderStats(); renderIAA(); renderLog();
+    $("exportBtn").disabled = !state.evals.length;
+  }
 
   $("sessName").addEventListener("input", e => { state.sessionName = e.target.value; save(); });
   $("modelA").addEventListener("input", e => { state.modelA = e.target.value || "Model A"; save(); renderAll(); renderTrial(); });
@@ -666,7 +1148,25 @@
   $("notes").addEventListener("input", e => { trial.notes = e.target.value; });
   $("saveBtn").addEventListener("click", saveEval);
   $("clearTrial").addEventListener("click", () => { trial = newTrial(); renderTrial(); });
+  $("raterId").addEventListener("input", e => { state.rater = e.target.value.trim() || "R1"; save(); });
   $("exportBtn").addEventListener("click", exportCSV);
+  $("importBtn").addEventListener("click", () => $("importFile").click());
+  $("importFile").addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const hint = $("importHint");
+    try {
+      const fallback = (state.rater === "R1" ? "R2" : "R1");
+      const res = importCSV(await f.text(), fallback);
+      hint.textContent = `Imported ${res.added} eval${res.added === 1 ? "" : "s"} from ${res.raters.join(", ")}.`;
+      hint.style.color = "var(--text-secondary)";
+      renderAll();
+    } catch (err) {
+      hint.textContent = "Could not import: " + err.message;
+      hint.style.color = "var(--warning)";
+    }
+    e.target.value = "";
+  });
   $("demoBtn").addEventListener("click", loadDemo);
   $("resetBtn").addEventListener("click", () => {
     if (!confirm("Clear all saved evals in this session?")) return;
