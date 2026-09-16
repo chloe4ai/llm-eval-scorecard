@@ -1,5 +1,14 @@
 # Statistics tests
 
+Quick check, no dependencies beyond Node 18+:
+
+```bash
+node --test test/
+```
+
+`test_edge_cases.js` covers the messy input real sessions produce: skipped cells, half-filled
+CSV rows, out-of-range scores. CI runs both suites on every push.
+
 The app ships with no dependencies, so the statistics are hand-rolled — which means they
 have to be checked against implementations that are already trusted.
 
