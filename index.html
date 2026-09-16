@@ -477,7 +477,7 @@
     // binom.test). Exact rather than normal-approximate because eval sessions are
     // small - n=12 is where the approximation starts lying to you.
     function binomTest(k, n, p = 0.5) {
-      if (!n || k < 0 || k > n) return NaN;
+      if (!Number.isInteger(n) || !Number.isInteger(k) || n < 1 || k < 0 || k > n || !(p > 0 && p < 1)) return NaN;
       const obs = binomPMF(k, n, p);
       let s = 0;
       for (let i = 0; i <= n; i++) {
@@ -501,9 +501,11 @@
     // both models answered the same prompt - the prompt-to-prompt variance is
     // shared and should not be charged against the comparison.
     function bootstrapGap(evals, B = 2000, seed = 0x5EED) {
-      const n = evals.length;
+      // A blank or unparseable score (e.g. a half-filled imported CSV row) must not
+      // poison the interval: NaN sorts unpredictably and can hide a zero-crossing.
+      const d = evals.map(e => e.wa - e.wb).filter(Number.isFinite);
+      const n = d.length;
       if (n < 2) return null;
-      const d = evals.map(e => e.wa - e.wb);
       const point = d.reduce((t, v) => t + v, 0) / n;
       const rnd = mulberry32(seed);
       const reps = new Array(B);
@@ -523,7 +525,9 @@
     // not the same failure as 1-vs-5), and over Fleiss' kappa because alpha
     // tolerates missing data - real annotation sets are ragged.
     function krippendorffOrdinal(units) {
-      const used = units.filter(u => u.length >= 2);
+      // Skipped cells arrive as null/NaN; drop them before counting raters per unit,
+      // otherwise null is coerced to 0 and scored as a real (very low) rating.
+      const used = units.map(u => u.filter(Number.isFinite)).filter(u => u.length >= 2);
       if (!used.length) return NaN;
       const vals = [...new Set(used.flat())].sort((a, b) => a - b);
       const idx = new Map(vals.map((v, i) => [v, i]));
@@ -560,14 +564,18 @@
     // annotation vendors quote, kept alongside alpha so the scorecard speaks both
     // dialects.
     function weightedKappa(pairs, minV = 1, maxV = 5) {
-      const N = pairs.length;
-      if (!N) return NaN;
       const K = maxV - minV + 1;
       const O = Array.from({ length: K }, () => new Float64Array(K));
+      // N counts only the pairs actually tabulated. Using pairs.length let an
+      // out-of-range or non-integer pair dilute every cell proportion and bias kappa.
+      let N = 0;
       for (const [a, b] of pairs) {
+        if (!Number.isInteger(a) || !Number.isInteger(b)) continue;
         if (a < minV || a > maxV || b < minV || b > maxV) continue;
         O[a - minV][b - minV]++;
+        N++;
       }
+      if (!N) return NaN;
       const r = new Float64Array(K), c = new Float64Array(K);
       for (let i = 0; i < K; i++) for (let j = 0; j < K; j++) { r[i] += O[i][j]; c[j] += O[i][j]; }
       const w = (i, j) => ((i - j) * (i - j)) / ((K - 1) * (K - 1));
@@ -582,7 +590,8 @@
     // How many trials would it take? Normal approximation, two-sided alpha=.05,
     // power=.80 - labelled as approximate in the UI, because it is.
     function nForWinRate(p) {
-      if (!Number.isFinite(p) || Math.abs(p - 0.5) < 1e-6) return Infinity;
+      if (!(p >= 0 && p <= 1)) return NaN;
+      if (Math.abs(p - 0.5) < 1e-6) return Infinity;
       const num = 1.959964 * 0.5 + 0.8416212 * Math.sqrt(p * (1 - p));
       return Math.ceil(Math.pow(num / (p - 0.5), 2));
     }
